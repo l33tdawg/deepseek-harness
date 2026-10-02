@@ -39,7 +39,19 @@ import type { ConfinedArgv, ConfinedSandboxMode, RunnerFailureRule, SandboxEnfor
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import { AclWriteGrant, assertTempRootOutsideWorkspace, registerAclDiagnosisSkill, tempWriteSid, workspaceWriteSid } from '@deepseek-ai/dsh-sandbox-windows-acl'
 import { assertNever } from '@deepseek-ai/dsh-util-values'
-import { bwrapProfileArgs, landlockProfileArgs, seatbeltProfileArgs } from './profiles.ts'
+import { bwrapProfileArgs, landlockProfileArgs, networkAllowed, seatbeltProfileArgs } from './profiles.ts'
+
+/**
+ * Whether one runner can enforce the network restriction. bwrap gets a private
+ * network namespace and Seatbelt gets a kernel deny; Landlock is documented as
+ * filesystem-only and windows-acl's restricted token does not govern sockets,
+ * so both must say so rather than inherit the file verdict.
+ * @param runner - the selected backend.
+ * @returns that backend's network enforcement completeness.
+ */
+function networkEnforcementOf(runner: SelectedRunner['runner']): SandboxEnforcement {
+  return runner === 'bwrap' || runner === 'seatbelt' ? 'full' : 'partial'
+}
 
 /** Plugin config. All optional — `static Config` supplies the defaults. */
 export interface Config {
@@ -329,15 +341,32 @@ export class LocalSandboxProvider extends SandboxProvider {
       return Promise.resolve<ConfinedArgv>({
         argv: [...this.runnerCommand, ...bwrapProfileArgs(policy), '--', ...argv],
         enforcement: 'full',
+        // An operator-supplied runner is wrapped with the bwrap profile, so it
+        // carries --unshare-net like the built-in rung; whether the runner
+        // honours it is the operator's assertion, exactly as for file effects.
+        networkEnforcement: 'full',
         denialSignatures: DENIAL_SIGNATURES.runnerCommand,
         runnerFailureRules: [{ fatalSignatures: this.configuredRunnerFailureSignatures }],
       })
     }
     const selected = this.selectRunner(policy.mode)
     const runnerArgv = this.runnerArgv(selected.runner, policy)
+    const networkEnforcement = networkEnforcementOf(selected.runner)
+    if (!networkAllowed(policy) && networkEnforcement === 'partial') {
+      // Not fatal: the file fence still holds and the run is still useful. But a
+      // mode named read-only that silently permits egress is the failure this
+      // whole change exists to prevent, so it must be visible rather than
+      // inferred from reading the backend.
+      this.ctx.logger.warn(
+        'sandbox-local: %s cannot enforce the network restriction; confined commands under %s may still reach the network',
+        selected.runner,
+        policy.mode,
+      )
+    }
     return Promise.resolve<ConfinedArgv>({
       argv: [...runnerArgv, '--', ...argv],
       enforcement: selected.enforcement,
+      networkEnforcement,
       denialSignatures: DENIAL_SIGNATURES[selected.runner],
       runnerFailureRules: RUNNER_FAILURE_RULES[selected.runner],
     })

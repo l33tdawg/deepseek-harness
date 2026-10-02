@@ -51,6 +51,15 @@ async function runConfined(sandbox: LocalSandboxProvider, command: string, polic
 }
 
 describe.skipIf(!bwrapUsable)('sandbox-local: real bwrap confinement', () => {
+  it('read-only denies network egress through the private network namespace', async () => {
+    const workdir = await tempDir(tmpdir())
+    const sandbox = await provider()
+    const command = 'curl -s -m 5 -o /dev/null https://example.com'
+    const { result, confined } = await runConfined(sandbox, command, { mode: 'read-only', workspaceRoot: workdir })
+    expect(confined.networkEnforcement).toBe('full')
+    expect(result.status).not.toBe(0)
+  })
+
   it('the passing probe selects the bwrap rung naturally — first in the ladder, full enforcement, EROFS dialect', async () => {
     const workdir = await tempDir(tmpdir())
     const sandbox = await provider()

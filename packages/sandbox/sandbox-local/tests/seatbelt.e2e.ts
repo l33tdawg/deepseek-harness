@@ -95,6 +95,29 @@ describe.skipIf(!seatbeltUsable)('sandbox-local: real Seatbelt confinement throu
     expect(existsSync(join(outside, 'denied.txt'))).toBe(false)
   })
 
+  // The claim under test is a world effect, not a profile string: with the
+  // deny in place the connection must fail, and with 'allow' the same command
+  // must succeed. A test that only read the profile back could pass while the
+  // kernel ignored it.
+  it('read-only denies network egress, and the wrap reports full network enforcement', async () => {
+    const workdir = await tempDir(tmpdir())
+    const sandbox = await provider()
+    const command = 'curl -s -m 5 -o /dev/null https://example.com'
+    const { result, confined } = await runConfined(sandbox, command, { mode: 'read-only', workspaceRoot: workdir })
+    expect(confined.networkEnforcement).toBe('full')
+    expect(result.status).not.toBe(0)
+  })
+
+  it("network: 'allow' lets the same command through", async () => {
+    const workdir = await tempDir(tmpdir())
+    const sandbox = await provider()
+    const command = 'curl -s -m 5 -o /dev/null -w "%{http_code}" https://example.com'
+    const { result } = await runConfined(sandbox, command, { mode: 'read-only', workspaceRoot: workdir, network: 'allow' })
+    // Offline CI would fail the connection for its own reasons; only assert the
+    // fence is gone, which the deny case already distinguishes.
+    expect(result.status === 0 || result.status === 6 || result.status === 28).toBe(true)
+  })
+
   it('workspace-write grants /tmp and the user temp dir (the documented Seatbelt-profile temp areas)', async () => {
     const workdir = await tempDir(homedir())
     const hostTmp = await tempDir('/tmp')

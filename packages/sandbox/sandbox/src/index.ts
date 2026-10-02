@@ -43,6 +43,14 @@ export interface SandboxExecutionPolicy {
   /** Absolute root directory `workspace-write` may write under. */
   workspaceRoot: string
   /**
+   * Whether the confined process may open network connections. Absent means
+   * `deny` under every confining mode, so a policy that never mentions the
+   * network still gets the restriction: reads and egress are the two halves of
+   * exfiltration, and a fence over one stops neither. `danger-full-access`
+   * ignores this, as it ignores every other restriction.
+   */
+  network?: SandboxNetworkAccess
+  /**
    * Opaque identity of the calling session (the branded `dsh-session`
    * SessionId). Backends key per-session state off it (e.g. windows-acl gives
    * each live session/workspace pair a random private temp directory and SID,
@@ -58,6 +66,12 @@ export interface SandboxExecutionPolicy {
  * an absolute boundary must not treat it as `full`.
  */
 export type SandboxEnforcement = 'full' | 'partial'
+
+/**
+ * Network reach for a confined process. `deny` blocks outbound connections and
+ * listening sockets; `allow` leaves the host's own reachability untouched.
+ */
+export type SandboxNetworkAccess = 'deny' | 'allow'
 
 /**
  * What one confined execution is allowed to touch — carried PER CALL, not
@@ -98,6 +112,17 @@ export interface ConfinedArgv {
   argv: string[]
   /** How completely the selected backend enforces the policy's file effects. */
   enforcement: SandboxEnforcement
+  /**
+   * How completely the selected backend enforces the policy's network
+   * restriction, or absent when the provider does not report it. Kept separate
+   * from {@link enforcement} because a backend can govern every file effect
+   * while being unable to touch the network at all — Landlock is
+   * filesystem-only, and windows-acl's restricted token does not govern
+   * sockets — so treating `full` file enforcement as proof of egress control
+   * is wrong on exactly those hosts. A consumer that needs the guarantee must
+   * read `'full'` positively; absence is not a claim.
+   */
+  networkEnforcement?: SandboxEnforcement
   /**
    * The selected backend's denial DIALECT: the case-insensitive stderr
    * substrings a file effect denied by THIS backend produces (EROFS text

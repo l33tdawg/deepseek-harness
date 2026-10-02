@@ -70,16 +70,20 @@ function fakeSeatbeltExec(status: number): string {
 }
 
 /** The seatbelt read-only profile — every seatbelt profile starts with these forms. */
-const SEATBELT_RO_PROFILE = '(version 1) (allow default) (deny file-write*) (allow file-write* (literal "/dev/null"))'
+const SEATBELT_RO_PROFILE = '(version 1) (allow default) (deny file-write*) (allow file-write* (literal "/dev/null")) (deny network*)'
+/** The same profile with egress permitted, for the opt-out assertions. */
+const SEATBELT_RO_PROFILE_NET = '(version 1) (allow default) (deny file-write*) (allow file-write* (literal "/dev/null"))'
+/** The bwrap profile's invariant head; the network flag is inserted after it. */
+const BWRAP_HEAD = ['--ro-bind', '/', '/', '--dev', '/dev', '--unshare-pid', '--proc', '/proc', '--die-with-parent']
 
 describe('profile dialects', () => {
   it('bwrap read-only: whole tree read-only with fresh /dev and private PID-scoped /proc, no writable mounts', () => {
-    expect(bwrapProfileArgs(RO)).toEqual(['--ro-bind', '/', '/', '--dev', '/dev', '--unshare-pid', '--proc', '/proc', '--die-with-parent'])
+    expect(bwrapProfileArgs(RO)).toEqual([...BWRAP_HEAD, '--unshare-net'])
   })
 
   it('bwrap workspace-write: adds an ephemeral /tmp and rebinds the workspace root', () => {
     expect(bwrapProfileArgs(WW)).toEqual([
-      '--ro-bind', '/', '/', '--dev', '/dev', '--unshare-pid', '--proc', '/proc', '--die-with-parent',
+      ...BWRAP_HEAD, '--unshare-net',
       '--tmpfs', '/tmp', '--bind', '/ws', '/ws',
     ])
   })
@@ -107,6 +111,23 @@ describe('profile dialects', () => {
     const roots = [...new Set(['/ws', realpathSync('/tmp'), realpathSync(tmpdir())])]
     const allow = `(allow file-write* ${roots.map(root => `(subpath "${root}")`).join(' ')})`
     expect(seatbeltProfileArgs(WW)).toEqual(['-p', `${SEATBELT_RO_PROFILE} ${allow}`])
+  })
+
+  // The network axis is independent of the file axis: a policy that never
+  // mentions it is confined, and only an explicit 'allow' lifts the deny.
+  it('denies network by default in both expressible profiles', () => {
+    expect(bwrapProfileArgs(RO)).toContain('--unshare-net')
+    expect(bwrapProfileArgs({ ...RO, network: 'deny' })).toContain('--unshare-net')
+    expect(seatbeltProfileArgs(RO)[1]).toContain('(deny network*)')
+    expect(seatbeltProfileArgs({ ...RO, network: 'deny' })[1]).toContain('(deny network*)')
+  })
+
+  it("network: 'allow' lifts the deny in both profiles and changes nothing else", () => {
+    expect(bwrapProfileArgs({ ...RO, network: 'allow' })).toEqual([...BWRAP_HEAD])
+    expect(seatbeltProfileArgs({ ...RO, network: 'allow' })).toEqual(['-p', SEATBELT_RO_PROFILE_NET])
+    // The file fence is untouched by the network decision.
+    expect(bwrapProfileArgs({ ...WW, network: 'allow' })).toContain('--bind')
+    expect(seatbeltProfileArgs({ ...WW, network: 'allow' })[1]).toContain('(deny file-write*)')
   })
 
   it('seatbelt workspace-write dedups a workspace root that already IS the temp dir', () => {
