@@ -263,12 +263,73 @@ const bootstrapIncludes = new WeakMap<Context, Entry>()
 // reference `process.env`.
 const userPatchesSchema = entryListSchema
 
+/**
+ * Tools each live agent can currently see, keyed by session id.
+ *
+ * A profile reload rebuilds the plugin tree the agents' presets were mounted
+ * from without rebuilding the agents themselves, so a live agent can keep a
+ * scope that no longer holds what its preset registered. Nothing throws when
+ * that happens: every plugin activates, and the agent is simply holding a tree
+ * that has been replaced. Comparing this before and after is the only way to
+ * see it from inside the reload.
+ *
+ * @param ctx - booted root context.
+ * @returns one tool-name set per live agent, or undefined when the composition
+ *   mounts no agent or tool registry to read.
+ */
+function visibleToolsByAgent(ctx: Context): Map<string, ReadonlySet<string>> | undefined {
+  const agents = ctx.get('agents') as { list?: () => { id: unknown }[] } | undefined
+  const tools = ctx.get('tools') as { schemas?: (scope?: unknown) => { name: string }[] } | undefined
+  if (agents?.list === undefined || tools?.schemas === undefined) return undefined
+  const snapshot = new Map<string, ReadonlySet<string>>()
+  for (const agent of agents.list()) {
+    try {
+      snapshot.set(String(agent.id), new Set(tools.schemas(agent).map(schema => schema.name)))
+    } catch {
+      // An agent mid-teardown has no readable view, so it cannot be compared.
+    }
+  }
+  return snapshot
+}
+
+/**
+ * Diagnostics for live agents that lost tools across a reload.
+ * @param before - snapshot taken before the patch generation was applied.
+ * @param after - snapshot taken after it settled.
+ * @param binName - diagnostic prefix.
+ * @returns one message per agent that lost tools, empty when none did.
+ */
+function strandedToolDiagnostics(
+  before: Map<string, ReadonlySet<string>> | undefined,
+  after: Map<string, ReadonlySet<string>> | undefined,
+  binName: string,
+): string[] {
+  if (before === undefined || after === undefined) return []
+  const diagnostics: string[] = []
+  for (const [id, previous] of before) {
+    const current = after.get(id)
+    // An agent that is gone lost nothing; it ended.
+    if (current === undefined) continue
+    const lost = [...previous].filter(name => !current.has(name))
+    if (lost.length === 0) continue
+    const shown = lost.slice(0, 8).join(', ')
+    diagnostics.push(
+      `${binName}: session ${id} lost ${lost.length} tool(s) across the profile reload: `
+      + `${shown}${lost.length > 8 ? `, and ${lost.length - 8} more` : ''}. `
+      + 'The change applied, but this session holds plugin scopes from the previous tree, '
+      + 'so restart to restore them.',
+    )
+  }
+  return diagnostics
+}
+
 /** Apply one complete patch generation and wait for Loader activation diagnostics.
  * @param ctx Booted root context.
  * @param patches Complete ordered patch list.
  * @param binName Diagnostic prefix.
  * @param requiredIds Explicit enablement targets whose existing failures also reject reconciliation.
- * @returns Diagnostics for unchanged pre-existing inactive entries; new or changed failures reject.
+ * @returns Diagnostics for unchanged pre-existing inactive entries and for any live agent that lost
+ *   tools to the rebuild; new or changed failures reject.
  */
 export async function reconcileProfilePatches(
   ctx: Context, patches: PatchOptions[], binName: string, requiredIds: readonly string[] = [],
@@ -286,6 +347,7 @@ export async function reconcileProfilePatches(
   // The recomposition judges the rows the launch judged, resolved from the file this Include read.
   const parentURL = new URL('.', new URL(includeConfig.path, entry.parent.tree.ctx.baseUrl)).href
   const prepared = prepareProfilePatches(ctx, patches, parentURL, binName)
+  const toolsBefore = visibleToolsByAgent(ctx)
   await entry.update({ config: { ...includeConfig, patches: prepared } })
   const results = await Promise.allSettled(previousFibers.map(({ fiber }) => fiber.await()))
   await ctx.loader.await()
@@ -298,7 +360,10 @@ export async function reconcileProfilePatches(
     if (result.status === 'rejected' && !previousFibers[index]?.failed) throw result.reason
   }
   ctx.emit('app-boot/config-reload')
-  return failures.map(inactiveDiagnostic)
+  return [
+    ...failures.map(inactiveDiagnostic),
+    ...strandedToolDiagnostics(toolsBefore, visibleToolsByAgent(ctx), binName),
+  ]
 }
 
 /**

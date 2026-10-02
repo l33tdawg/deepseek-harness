@@ -475,3 +475,62 @@ describe('boot with user patches', () => {
   })
 
 })
+
+const FAKE_REGISTRIES = [
+  'let visible = ["read", "write", "bash"]',
+  'export function apply(ctx) {',
+  '  ctx.provide("agents", { list: () => [{ id: "session-1" }] })',
+  '  ctx.provide("tools", { schemas: () => visible.map((name) => ({ name })) })',
+  '  ctx.on("app-boot/config-reload", () => { visible = ["read"] })',
+  '}',
+  '',
+].join('\n')
+
+const FAKE_REGISTRIES_INTACT = [
+  'export function apply(ctx) {',
+  '  ctx.provide("agents", { list: () => [{ id: "session-1" }] })',
+  '  ctx.provide("tools", { schemas: () => [{ name: "read" }, { name: "write" }] })',
+  '}',
+  '',
+].join('\n')
+
+describe('live agents stranded by a profile reload', () => {
+  // A profile reload rebuilds the plugin tree the agents' presets were mounted
+  // from without rebuilding the agents. Every plugin still activates, so the
+  // existing activation diagnostics say nothing, and the session is left
+  // holding scopes from a tree that has been replaced.
+  it('reports the tools a live agent lost to the rebuild', async () => {
+    const dir = tmp()
+    writeFileSync(join(dir, 'cordis.yml'), '[]\n')
+    writeFileSync(join(dir, 'fake-registries.mjs'), FAKE_REGISTRIES)
+    const patches = [{ insert: [{ id: 'fake-registries', name: './fake-registries.mjs' }] }]
+    const ctx = await boot(NAME, join(dir, 'cordis.yml'), patches)
+    onTestFinished(() => ctx.fiber.dispose())
+
+    const diagnostics = await reconcileProfilePatches(ctx, patches, NAME)
+    expect(diagnostics).toHaveLength(1)
+    expect(diagnostics[0]).toContain('session-1 lost 2 tool(s)')
+    expect(diagnostics[0]).toContain('write')
+    expect(diagnostics[0]).toContain('bash')
+    expect(diagnostics[0]).toContain('restart')
+  })
+
+  it('stays quiet when a live agent keeps every tool', async () => {
+    const dir = tmp()
+    writeFileSync(join(dir, 'cordis.yml'), '[]\n')
+    writeFileSync(join(dir, 'fake-registries.mjs'), FAKE_REGISTRIES_INTACT)
+    const patches = [{ insert: [{ id: 'fake-registries', name: './fake-registries.mjs' }] }]
+    const ctx = await boot(NAME, join(dir, 'cordis.yml'), patches)
+    onTestFinished(() => ctx.fiber.dispose())
+
+    expect(await reconcileProfilePatches(ctx, patches, NAME)).toEqual([])
+  })
+
+  it('stays quiet when the composition mounts no agent registry', async () => {
+    const dir = tmp()
+    writeFileSync(join(dir, 'cordis.yml'), '[]\n')
+    const ctx = await boot(NAME, join(dir, 'cordis.yml'), [])
+    onTestFinished(() => ctx.fiber.dispose())
+    expect(await reconcileProfilePatches(ctx, [], NAME)).toEqual([])
+  })
+})
