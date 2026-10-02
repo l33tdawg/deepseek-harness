@@ -59,7 +59,9 @@ export function apply(ctx: Context, config: Config): void {
   ctx.systemPrompt.section({
     name: 'tool:session-query',
     order: ctx.systemPrompt.getSectionOrder('TOOL_SESSION_QUERY'),
-    text: PROMPT_TEXT,
+    text: ({ scope }) => ['session_search', 'session_event_search', 'session_trace', 'session_event_trace'].some(name => ctx.tools.get(name, scope) !== undefined)
+      ? PROMPT_TEXT
+      : '',
   })
 
   ctx.tools.register(defineTool({

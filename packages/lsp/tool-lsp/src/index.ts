@@ -103,7 +103,9 @@ export function apply(ctx: Context, config: Config): void {
   ctx.systemPrompt.section({
     name: 'tool:lsp',
     order: ctx.systemPrompt.getSectionOrder('TOOL_LSP'),
-    text: LSP_PROMPT_TEXT,
+    text: ({ scope }) => ctx.tools.get('lsp', scope) === undefined
+      ? ''
+      : LSP_PROMPT_TEXT,
   })
 
   ctx.tools.register(defineTool({
