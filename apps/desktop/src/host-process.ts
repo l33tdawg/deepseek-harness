@@ -224,9 +224,12 @@ export class DesktopHostProcess {
     })
     child.once('error', (error) => { this.fail(error) })
     this.exitPromise = new Promise<void>((resolve) => {
-      child.once('close', (code) => {
-        const suffix = this.stderr.trim() === '' ? '' : `: ${this.stderr.trim()}`
+      child.once('close', (code, signal) => {
+        // The tail is what the Host last wrote, not why it died: a process that
+        // crashes without printing carries only output from before it.
+        const suffix = this.stderr.trim() === '' ? '' : `; last output on stderr: ${this.stderr.trim()}`
         if (code !== 0 && code !== null) this.fail(new Error(`dsh desktop host exited with ${String(code)}${suffix}`))
+        else if (signal !== null) this.fail(new Error(`dsh desktop host was killed by ${signal}${suffix}`))
         else this.fail(new Error(`dsh desktop host stopped${suffix}`))
         resolve()
       })
